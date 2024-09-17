@@ -25,6 +25,8 @@ const pointHandle = struct {
 
 const Point = @Vector(2, u16);
 
+var RectDebugList: std.ArrayList(Rectangle) = undefined;
+
 const Rectangle = struct {
     x: u16,
     y: u16,
@@ -70,6 +72,17 @@ const Tree = struct {
     pointsInArray: u8,
 
     isDivided: bool,
+
+    fn addlist(self: Self) void {
+        RectDebugList.append(self.boundry) catch unreachable;
+
+        if (self.isDivided) {
+            self.tl.addlist();
+            self.tr.addlist();
+            self.bl.addlist();
+            self.br.addlist();
+        }
+    }
 
     fn draw(self: Self, c: raylib.Color) void {
         //raylib.DrawRectangleLines(self.boundry.x, self.boundry.y, self.boundry.w, self.boundry.h, c);
@@ -144,7 +157,7 @@ const Tree = struct {
         });
 
         self.tr.* = Tree.init(Rectangle{
-            .x = self.boundry.w / 2,
+            .x = self.boundry.x + self.boundry.w / 2,
             .y = self.boundry.y,
             .w = self.boundry.w / 2,
             .h = self.boundry.h / 2,
@@ -152,14 +165,14 @@ const Tree = struct {
 
         self.bl.* = Tree.init(Rectangle{
             .x = self.boundry.x,
-            .y = self.boundry.h / 2,
+            .y = self.boundry.y + self.boundry.h / 2,
             .w = self.boundry.w / 2,
             .h = self.boundry.h / 2,
         });
 
         self.br.* = Tree.init(Rectangle{
-            .x = self.boundry.w / 2,
-            .y = self.boundry.h / 2,
+            .x = self.boundry.x + self.boundry.w / 2,
+            .y = self.boundry.y + self.boundry.h / 2,
             .w = self.boundry.w / 2,
             .h = self.boundry.h / 2,
         });
@@ -243,6 +256,9 @@ const AppState = struct {
 
 pub fn main() !void {
     STATE = try AppState.init(arena);
+    RectDebugList = std.ArrayList(Rectangle).init(arena);
+
+    //
     raylib.InitWindow(WINDOW_W, WINDOW_H, "win");
     defer raylib.CloseWindow();
 
@@ -255,7 +271,7 @@ pub fn main() !void {
         try STATE.pointList.append(Point{ rand.intRangeAtMost(u16, 0, WINDOW_W), rand.intRangeAtMost(u16, 0, WINDOW_H) });
         try STATE.quadTree.insert(pointHandle{ .pointer = @intCast(i) }, insertArena);
     }
-    STATE.quadTree.prettyPrint(1);
+    //STATE.quadTree.prettyPrint(1);
 
     while (!raylib.WindowShouldClose()) {
         raylib.BeginDrawing();
@@ -263,7 +279,7 @@ pub fn main() !void {
         raylib.ClearBackground(raylib.WHITE);
         STATE.quadTree.draw(raylib.BLACK);
         for (STATE.pointList.items) |point| {
-            raylib.DrawCircle(@intCast(point[0]), @intCast(point[1]), 5, raylib.WHITE);
+            raylib.DrawCircle(@intCast(point[0]), @intCast(point[1]), 5, raylib.PURPLE);
         }
     }
 }

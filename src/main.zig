@@ -7,10 +7,15 @@ const rGenerator = std.rand.DefaultPrng;
 var rnd = rGenerator.init(0);
 const rand = rnd.random();
 
-const WINDOW_W = 800;
-const WINDOW_H = 800;
+const WINDOW_W = 1900;
+const WINDOW_H = 1080;
+
+const PARTICLE_COUNT = 1000;
 
 const POINTS_PER_QUAD = 1;
+const particleRadius = 10;
+
+const VISUALISE_TREE = false;
 
 var pa = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 const arena = pa.allocator();
@@ -18,14 +23,84 @@ const arena = pa.allocator();
 // global state of the app
 var STATE: AppState = undefined;
 
-//
+// handle for point
+// DOD principle
 const pointHandle = struct {
-    pointer: u8,
+    pointer: u16,
 };
 
-const Point = @Vector(2, u16);
+//
+const Point = @Vector(2, i32);
 
-var RectDebugList: std.ArrayList(Rectangle) = undefined;
+// get magnitude of a vector
+fn getDistance(a: Point) u32 {
+    return std.math.sqrt((@as(u32, @intCast(std.math.pow(i32, a[0], 2))) + @as(u32, @intCast(std.math.pow(i32, a[1], 2)))));
+}
+
+const Particle = struct {
+    position: Point,
+    velocity: @Vector(2, i32),
+
+    fn initRandom() Particle {
+        return .{
+            .position = Point{
+                rand.intRangeAtMost(i32, 0, WINDOW_W),
+                rand.intRangeAtMost(i32, 0, WINDOW_H),
+            },
+            .velocity = .{
+                rand.intRangeAtMost(i8, -20, 20),
+                rand.intRangeAtMost(i8, -20, 20),
+            },
+        };
+    }
+
+    fn collides(self: Particle, other: Particle) bool {
+        return getDistance(self.position - other.position) <= particleRadius * 2;
+    }
+
+    fn eql(self: Particle, other: Particle) bool {
+        const tst = self.position == other.position;
+        return tst[0] and tst[1];
+    }
+
+    fn applyMovement(self: *Particle, allocator: std.mem.Allocator) void {
+        const particlesL = STATE.quadTree.queryRange(Rectangle{
+            .x = @as(u16, @intCast(std.math.clamp(self.position[0] - particleRadius, 0, WINDOW_W * 2))),
+            .y = @as(u16, @intCast(std.math.clamp(self.position[1] - particleRadius, 0, WINDOW_H * 2))),
+            .w = particleRadius * 2,
+            .h = particleRadius * 2,
+        }, allocator);
+
+        if (particlesL) |particles| {
+            for (particles.items) |particle| {
+                // if is the same particle
+                if (STATE.getParticle(particle).eql(self.*)) {
+                    continue;
+                }
+
+                // if particle collision
+                if (STATE.getParticle(particle).collides(self.*)) {
+                    var part = STATE.getParticleRef(particle);
+                    const bounce = (self.position - part.position);
+                    self.velocity = bounce;
+                    part.velocity = -bounce;
+                }
+            }
+        }
+
+        if (self.position[0] >= WINDOW_W or self.position[0] <= 0) {
+            self.velocity[0] = -self.velocity[0];
+        }
+        self.position[0] += self.velocity[0];
+
+        if (self.position[1] >= WINDOW_W or self.position[1] <= 0) {
+            self.velocity[1] = -self.velocity[1];
+        }
+        self.position[1] += self.velocity[1];
+
+        // see if collision
+    }
+};
 
 const Rectangle = struct {
     x: u16,
@@ -67,26 +142,13 @@ const Tree = struct {
     br: *Tree,
 
     boundry: Rectangle,
-    // points in this thing
+    // points in this tree
     points: [POINTS_PER_QUAD]pointHandle,
     pointsInArray: u8,
 
     isDivided: bool,
 
-    fn addlist(self: Self) void {
-        RectDebugList.append(self.boundry) catch unreachable;
-
-        if (self.isDivided) {
-            self.tl.addlist();
-            self.tr.addlist();
-            self.bl.addlist();
-            self.br.addlist();
-        }
-    }
-
     fn draw(self: Self, c: raylib.Color) void {
-        //raylib.DrawRectangleLines(self.boundry.x, self.boundry.y, self.boundry.w, self.boundry.h, c);
-
         self.boundry.draw(c);
 
         if (self.isDivided) {
@@ -211,75 +273,105 @@ const Tree = struct {
         // i dont really like creating the array here
         var list = std.ArrayList(pointHandle).init(allocator);
 
-        for (0..self.points.len) |val| {
+        for (0..self.pointsInArray) |val| {
             if (rect.isInside(STATE.getPoint(self.points[val]))) {
-                list.append(self.points[val]);
+                list.append(self.points[val]) catch unreachable;
             }
         }
         if (!self.isDivided) {
             return list;
         }
 
-        self.tl.addQueryToList(rect, list, allocator);
-        self.tr.addQueryToList(rect, list, allocator);
-        self.bl.addQueryToList(rect, list, allocator);
-        self.br.addQueryToList(rect, list, allocator);
+        self.tl.addQueryToList(rect, &list, allocator);
+        self.tr.addQueryToList(rect, &list, allocator);
+        self.bl.addQueryToList(rect, &list, allocator);
+        self.br.addQueryToList(rect, &list, allocator);
+        return list;
     }
 
     // just a fn that adds the items into an arraylist
-    fn addQueryToList(t: Tree, rect: Rectangle, list: *std.ArrayList(pointHandle), allocator: std.heap.ArenaAllocator) void {
+    fn addQueryToList(t: Tree, rect: Rectangle, list: *std.ArrayList(pointHandle), allocator: std.mem.Allocator) void {
         const t_items = t.queryRange(rect, allocator);
         if (t_items) |items| {
             for (items.items) |item| {
-                list.append(item);
+                list.append(item) catch unreachable;
             }
         }
     }
 };
 
 const AppState = struct {
-    pointList: std.ArrayList(Point),
+    particleList: std.ArrayList(Particle),
     quadTree: Tree,
 
     fn init(allocator: std.mem.Allocator) !AppState {
         var app: AppState = undefined;
-        const pointList = std.ArrayList(Point).init(allocator);
-        app.pointList = pointList;
+        app.particleList = std.ArrayList(Particle).init(allocator);
         app.quadTree = Tree.init(Rectangle{ .x = 0, .y = 0, .w = WINDOW_W, .h = WINDOW_H });
         return app;
     }
 
     fn getPoint(self: AppState, point: pointHandle) Point {
-        return self.pointList.items[point.pointer]; // or somthing like thai
+        return self.particleList.items[point.pointer].position;
+    }
+
+    fn getParticle(self: AppState, point: pointHandle) Particle {
+        return self.particleList.items[point.pointer];
+    }
+
+    fn getParticleRef(self: *AppState, point: pointHandle) *Particle {
+        return &self.particleList.items[point.pointer];
     }
 };
 
 pub fn main() !void {
     STATE = try AppState.init(arena);
-    RectDebugList = std.ArrayList(Rectangle).init(arena);
 
-    //
+    //raylib init
     raylib.InitWindow(WINDOW_W, WINDOW_H, "win");
     defer raylib.CloseWindow();
-
-    const pointcount = 100;
 
     var insertpool = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const insertArena = insertpool.allocator();
 
-    for (0..pointcount) |i| {
-        try STATE.pointList.append(Point{ rand.intRangeAtMost(u16, 0, WINDOW_W), rand.intRangeAtMost(u16, 0, WINDOW_H) });
+    var collisionPool = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const collisionArena = collisionPool.allocator();
+
+    // add particles
+    for (0..PARTICLE_COUNT) |i| {
+        try STATE.particleList.append(Particle.initRandom());
         try STATE.quadTree.insert(pointHandle{ .pointer = @intCast(i) }, insertArena);
     }
+
     //STATE.quadTree.prettyPrint(1);
+    raylib.SetTargetFPS(60);
 
     while (!raylib.WindowShouldClose()) {
         raylib.BeginDrawing();
         defer raylib.EndDrawing();
         raylib.ClearBackground(raylib.WHITE);
-        STATE.quadTree.draw(raylib.BLACK);
-        for (STATE.pointList.items) |point| {
-            raylib.DrawCircle(@intCast(point[0]), @intCast(point[1]), 5, raylib.PURPLE);
+
+        // draw quadttee
+        if (VISUALISE_TREE) {
+            STATE.quadTree.draw(raylib.BLACK);
+        }
+
+        // draw points
+        for (STATE.particleList.items) |point| {
+            raylib.DrawCircle(@intCast(point.position[0]), @intCast(point.position[1]), particleRadius, raylib.PURPLE);
+        }
+
+        // move particles
+        for (0..PARTICLE_COUNT) |i| {
+            STATE.particleList.items[i].applyMovement(collisionArena);
+            _ = collisionPool.reset(.retain_capacity);
+        }
+
+        _ = insertpool.reset(.retain_capacity);
+        STATE.quadTree.isDivided = false;
+        // reconstruct quad tree from zero
+        for (0..PARTICLE_COUNT) |i| {
+            try STATE.quadTree.insert(pointHandle{ .pointer = @intCast(i) }, insertArena);
         }
     }
 }
